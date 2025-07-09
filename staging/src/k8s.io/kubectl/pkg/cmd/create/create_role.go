@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/client-go/discovery"
 	clientgorbacv1 "k8s.io/client-go/kubernetes/typed/rbac/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -148,6 +149,9 @@ type CreateRoleOptions struct {
 	PrintObj            func(obj runtime.Object) error
 	FieldManager        string
 	CreateAnnotation    bool
+	StrictResourceCheck bool
+
+	DiscoveryClient discovery.CachedDiscoveryInterface
 
 	genericiooptions.IOStreams
 }
@@ -187,6 +191,7 @@ func NewCmdCreateRole(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *
 	cmd.Flags().StringSlice("resource", []string{}, "Resource that the rule applies to")
 	cmd.Flags().StringArrayVar(&o.ResourceNames, "resource-name", o.ResourceNames, "Resource in the white list that the rule applies to, repeat this flag for multiple items")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.FieldManager, "kubectl-create")
+	cmd.Flags().BoolVar(&o.StrictResourceCheck, "strict-resource-check", false, "If true, require all resources to exist in the cluster (like 'kubectl api-resources'). If false, skip this check.")
 	return cmd
 }
 
@@ -284,6 +289,12 @@ func (o *CreateRoleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args
 	}
 	o.Client = clientset.RbacV1()
 
+	discoveryClient, err := f.ToDiscoveryClient()
+	if err != nil {
+		return err
+	}
+	o.DiscoveryClient = discoveryClient
+
 	return nil
 }
 
@@ -313,6 +324,64 @@ func (o *CreateRoleOptions) Validate() error {
 }
 
 func (o *CreateRoleOptions) validateResource() error {
+	if o.StrictResourceCheck {
+		// Optimization: fetch the resource list only once and build a lookup table
+		apiResourceLists, err := o.DiscoveryClient.ServerPreferredResources()
+		if err != nil {
+			return fmt.Errorf("failed to list api-resources: %v", err)
+		}
+		// Build map[group][version][resource]bool for fast lookup
+		resourceMap := make(map[string]map[string]map[string]bool)
+		for _, apiResourceList := range apiResourceLists {
+			gv, err := schema.ParseGroupVersion(apiResourceList.GroupVersion)
+			if err != nil {
+				continue
+			}
+			group := gv.Group
+			version := gv.Version
+			if _, ok := resourceMap[group]; !ok {
+				resourceMap[group] = make(map[string]map[string]bool)
+			}
+			if _, ok := resourceMap[group][version]; !ok {
+				resourceMap[group][version] = make(map[string]bool)
+			}
+			for _, apiRes := range apiResourceList.APIResources {
+				resourceMap[group][version][apiRes.Name] = true
+			}
+		}
+
+		for _, r := range o.Resources {
+			// After optimization: directly lookup in the map
+			if len(r.Resource) == 0 {
+				return fmt.Errorf("resource must be specified if apiGroup/subresource specified")
+			}
+			if r.Resource == "*" {
+				return nil
+			}
+
+			resource := schema.GroupVersionResource{Resource: r.Resource, Group: r.Group}
+			groupVersionResource, err := o.Mapper.ResourceFor(schema.GroupVersionResource{Resource: r.Resource, Group: r.Group})
+			if err == nil {
+				resource = groupVersionResource
+			}
+
+			found := false
+			group := resource.Group
+			version := resource.Version
+			resName := resource.Resource
+			if vMap, ok := resourceMap[group]; ok {
+				if rMap, ok := vMap[version]; ok {
+					if rMap[resName] {
+						found = true
+					}
+				}
+			}
+			if !found {
+				return fmt.Errorf("resource %q in group %q not found in the cluster, please check 'kubectl api-resources'", resName, group)
+			}
+		}
+	}
+
 	for _, r := range o.Resources {
 		if len(r.Resource) == 0 {
 			return fmt.Errorf("resource must be specified if apiGroup/subresource specified")
