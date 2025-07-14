@@ -99,7 +99,6 @@ func NewCmdCreateClusterRole(f cmdutil.Factory, ioStreams genericiooptions.IOStr
 	cmd.Flags().StringArrayVar(&c.ResourceNames, "resource-name", c.ResourceNames, "Resource in the white list that the rule applies to, repeat this flag for multiple items")
 	cmd.Flags().Var(cliflag.NewMapStringString(&c.AggregationRule), "aggregation-rule", "An aggregation label selector for combining ClusterRoles.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &c.FieldManager, "kubectl-create")
-	cmd.Flags().BoolVar(&c.StrictResourceCheck, "strict-resource-check", false, "If true, require all resources to exist in the cluster (like 'kubectl api-resources'). If false, skip this check.")
 
 	return cmd
 }
