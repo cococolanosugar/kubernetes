@@ -38,6 +38,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/openapi3"
 	"k8s.io/client-go/util/csaupgrade"
@@ -75,6 +76,8 @@ type ApplyFlags struct {
 
 	PruneAllowlist []string
 
+	StrictResourceCheck bool
+
 	genericiooptions.IOStreams
 }
 
@@ -110,6 +113,9 @@ type ApplyOptions struct {
 
 	Namespace        string
 	EnforceNamespace bool
+
+	DiscoveryClient     discovery.CachedDiscoveryInterface
+	StrictResourceCheck bool
 
 	genericiooptions.IOStreams
 
@@ -238,6 +244,7 @@ func (flags *ApplyFlags) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&flags.Overwrite, "overwrite", flags.Overwrite, "Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
 	cmd.Flags().BoolVar(&flags.OpenAPIPatch, "openapi-patch", flags.OpenAPIPatch, "If true, use openapi to calculate diff when the openapi presents and the resource can be found in the openapi spec. Otherwise, fall back to use baked-in types.")
 	cmdutil.AddSubresourceFlags(cmd, &flags.Subresource, "If specified, apply will operate on the subresource of the requested object.  Only allowed when using --server-side.")
+	cmd.Flags().BoolVar(&flags.StrictResourceCheck, "strict-resource-check", false, "If true, validate RBAC resources in rules must exist in the cluster")
 }
 
 // ToOptions converts from CLI inputs to runtime inputs
@@ -312,6 +319,11 @@ func (flags *ApplyFlags) ToOptions(f cmdutil.Factory, cmd *cobra.Command, baseNa
 		return nil, err
 	}
 
+	discoveryClient, err := f.ToDiscoveryClient()
+	if err != nil {
+		return nil, err
+	}
+
 	var applySet *ApplySet
 	if flags.ApplySetRef != "" {
 		parent, err := ParseApplySetParentRef(flags.ApplySetRef, mapper)
@@ -371,6 +383,9 @@ func (flags *ApplyFlags) ToOptions(f cmdutil.Factory, cmd *cobra.Command, baseNa
 		DynamicClient:       dynamicClient,
 		OpenAPIGetter:       f,
 		OpenAPIV3Root:       openAPIV3Root,
+
+		StrictResourceCheck: flags.StrictResourceCheck,
+		DiscoveryClient:     discoveryClient,
 
 		IOStreams: flags.IOStreams,
 
@@ -444,6 +459,11 @@ func (o *ApplyOptions) Validate() error {
 	}
 	if len(o.Subresource) > 0 && !o.ServerSideApply {
 		return fmt.Errorf("--subresource can only be specified for --server-side")
+	}
+
+	err := o.validateRBACResources()
+	if err != nil {
+		return err
 	}
 
 	return nil
