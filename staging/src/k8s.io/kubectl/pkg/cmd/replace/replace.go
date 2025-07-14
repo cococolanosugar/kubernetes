@@ -37,6 +37,7 @@ import (
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/kubectl/pkg/cmd/delete"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
+	utilcmd "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/rawhttp"
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util"
@@ -96,7 +97,8 @@ type ReplaceOptions struct {
 
 	genericiooptions.IOStreams
 
-	fieldManager string
+	fieldManager        string
+	StrictResourceCheck bool // 新增字段
 }
 
 func NewReplaceOptions(streams genericiooptions.IOStreams) *ReplaceOptions {
@@ -131,6 +133,7 @@ func NewCmdReplace(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra
 	cmdutil.AddValidateFlags(cmd)
 	cmdutil.AddApplyAnnotationFlags(cmd)
 	cmdutil.AddDryRunFlag(cmd)
+	cmd.Flags().BoolVar(&o.StrictResourceCheck, "strict-resource-check", false, "Enable strict RBAC resource validation.") // 新增 flag
 
 	cmd.Flags().StringVar(&o.Raw, "raw", o.Raw, "Raw URI to PUT to the server.  Uses the transport specified by the kubeconfig file.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-replace")
@@ -276,6 +279,25 @@ func (o *ReplaceOptions) Run(f cmdutil.Factory) error {
 		Do()
 	if err := r.Err(); err != nil {
 		return err
+	}
+
+	if o.StrictResourceCheck {
+		discoveryClient, err := f.ToDiscoveryClient()
+		if err != nil {
+			return err
+		}
+		mapper, err := f.ToRESTMapper()
+		if err != nil {
+			return err
+		}
+		infos, err := r.Infos()
+		if err != nil {
+			return err
+		}
+		err = utilcmd.ValidateRBACResources(infos, discoveryClient, mapper)
+		if err != nil {
+			return err
+		}
 	}
 
 	return r.Visit(func(info *resource.Info, err error) error {

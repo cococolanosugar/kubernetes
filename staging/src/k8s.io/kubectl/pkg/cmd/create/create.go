@@ -38,6 +38,7 @@ import (
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/dynamic"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
+	utilcmd "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/cmd/util/editor"
 	"k8s.io/kubectl/pkg/generate"
 	"k8s.io/kubectl/pkg/rawhttp"
@@ -58,10 +59,11 @@ type CreateOptions struct {
 
 	fieldManager string
 
-	FilenameOptions  resource.FilenameOptions
-	Selector         string
-	EditBeforeCreate bool
-	Raw              string
+	FilenameOptions     resource.FilenameOptions
+	Selector            string
+	EditBeforeCreate    bool
+	Raw                 string
+	StrictResourceCheck bool // 新增字段
 
 	Recorder genericclioptions.Recorder
 	PrintObj func(obj kruntime.Object) error
@@ -129,6 +131,7 @@ func NewCmdCreate(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobr
 	cmdutil.AddLabelSelectorFlagVar(cmd, &o.Selector)
 	cmd.Flags().StringVar(&o.Raw, "raw", o.Raw, "Raw URI to POST to the server.  Uses the transport specified by the kubeconfig file.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-create")
+	cmd.Flags().BoolVar(&o.StrictResourceCheck, "strict-resource-check", false, "Enable strict RBAC resource validation.") // 新增 flag
 
 	o.PrintFlags.AddFlags(cmd)
 
@@ -259,6 +262,25 @@ func (o *CreateOptions) RunCreate(f cmdutil.Factory, cmd *cobra.Command) error {
 	err = r.Err()
 	if err != nil {
 		return err
+	}
+
+	if o.StrictResourceCheck {
+		discoveryClient, err := f.ToDiscoveryClient()
+		if err != nil {
+			return err
+		}
+		mapper, err := f.ToRESTMapper()
+		if err != nil {
+			return err
+		}
+		infos, err := r.Infos()
+		if err != nil {
+			return err
+		}
+		err = utilcmd.ValidateRBACResources(infos, discoveryClient, mapper)
+		if err != nil {
+			return err
+		}
 	}
 
 	count := 0
